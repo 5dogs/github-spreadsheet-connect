@@ -1,33 +1,63 @@
 /**
- * スプレッドシートからデータを取得し、CSV形式のBase64文字列に変換する関数
+ * スプレッドシートからデータを取得し、シートごとにCSVファイルを作成する関数
  */
 function getCSVData() {
     try {
-      // シート名を指定（必要に応じて変更）
-      var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("シート1");
-      if (!sheet) {
-        throw new Error("指定されたシートが見つかりません");
+      var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+      var sheets = spreadsheet.getSheets();
+      
+      if (sheets.length === 0) {
+        throw new Error("シートが見つかりません");
       }
       
-      var data = sheet.getDataRange().getValues();
+      Logger.log("処理対象シート数: " + sheets.length);
       
-      // CSV形式に変換
-      var csv = data.map(function(row) {
-        return row.map(function(cell) {
-          // null、undefined値を空文字列に変換
-          var cellValue = (cell === null || cell === undefined) ? "" : String(cell);
-          // CSVエスケープ処理（ダブルクォート、カンマ、改行を含む場合）
-          if (cellValue.includes('"') || cellValue.includes(',') || cellValue.includes('\n')) {
-            return '"' + cellValue.replace(/"/g, '""') + '"';
-          }
-          return cellValue;
-        }).join(",");
-      }).join("\n");
+      var csvFiles = [];
       
-      // Base64エンコード（UTF-8）
-      var blob = Utilities.newBlob(csv, 'text/csv', 'data.csv');
-      var encodedCSV = Utilities.base64Encode(blob.getBytes());
-      return encodedCSV;
+      // 各シートのデータを処理
+      for (var i = 0; i < sheets.length; i++) {
+        var sheet = sheets[i];
+        var sheetName = sheet.getName();
+        
+        Logger.log("シート処理中: " + sheetName);
+        
+        var data = sheet.getDataRange().getValues();
+        
+        if (data.length > 0) {
+          // CSV形式に変換
+          var csv = data.map(function(row) {
+            return row.map(function(cell) {
+              // null、undefined値を空文字列に変換
+              var cellValue = (cell === null || cell === undefined) ? "" : String(cell);
+              // CSVエスケープ処理（ダブルクォート、カンマ、改行を含む場合）
+              if (cellValue.includes('"') || cellValue.includes(',') || cellValue.includes('\n')) {
+                return '"' + cellValue.replace(/"/g, '""') + '"';
+              }
+              return cellValue;
+            }).join(",");
+          }).join("\n");
+          
+                     // ファイル名を生成（シートID + シート名で一意性を保証）
+           var sheetId = sheet.getSheetId();
+           var fileName = sheetId + '_' + sheetName.replace(/[<>:"/\\|?*]/g, '_') + '.csv';
+          
+          // Base64エンコード（UTF-8）
+          var blob = Utilities.newBlob(csv, 'text/csv', fileName);
+          var encodedCSV = Utilities.base64Encode(blob.getBytes());
+          
+          csvFiles.push({
+            fileName: fileName,
+            content: encodedCSV,
+            sheetName: sheetName,
+            rowCount: data.length
+          });
+          
+          Logger.log("✓ " + sheetName + " のCSV作成完了: " + data.length + "行");
+        }
+      }
+      
+      Logger.log("全シートのCSVファイル作成完了。ファイル数: " + csvFiles.length);
+      return csvFiles;
       
     } catch (error) {
       Logger.log("CSVデータ取得エラー: " + error.toString());
@@ -43,7 +73,7 @@ function getCSVData() {
     return {
       owner: "5dogs",  // あなたのGitHubユーザー名
       repo: "github-spreadsheet-connect",  // リポジトリ名
-      path: "data.csv",  // ファイルパス
+      path: "01/datadata.csv",  // ファイルパス（01フォルダ内に配置）
       token: properties.getProperty('GITHUB_TOKEN'),  // スクリプトプロパティから取得
       name: properties.getProperty('COMMITTER_NAME') || "GAS Auto Sync",
       email: properties.getProperty('COMMITTER_EMAIL') || "gas-auto-sync@example.com"
@@ -51,9 +81,9 @@ function getCSVData() {
   }
   
   /**
-   * GitHubの既存ファイル情報を取得する関数
-   */
-  function getExistingFileSHA(url, headers) {
+ * GitHubの既存ファイル情報を取得する関数
+ */
+function getExistingFileSHA(url, headers) {
     var options = {
       "method": "GET",
       "headers": headers,
@@ -72,6 +102,77 @@ function getCSVData() {
       throw new Error("ファイル情報の取得に失敗: " + response.getResponseCode() + " - " + response.getContentText());
     }
   }
+
+/**
+ * 01フォルダ内の古いCSVファイルを削除する関数
+ */
+function cleanupOldFiles(config, headers, currentFileNames) {
+    try {
+      Logger.log("古いファイルのクリーンアップを開始...");
+      
+      // 01フォルダ内のファイル一覧を取得
+      var url = "https://api.github.com/repos/" + config.owner + "/" + config.repo + "/contents/01";
+      var response = UrlFetchApp.fetch(url, {
+        "method": "GET",
+        "headers": headers,
+        "muteHttpExceptions": true
+      });
+      
+      if (response.getResponseCode() === 200) {
+        var contents = JSON.parse(response.getContentText());
+        var deletedCount = 0;
+        
+        for (var i = 0; i < contents.length; i++) {
+          var file = contents[i];
+          
+          // CSVファイルのみ対象
+          if (file.name.endsWith('.csv')) {
+            // 現在のファイル名リストに含まれていない場合は削除対象
+            if (!currentFileNames.includes(file.name)) {
+              Logger.log("古いファイルを削除中: " + file.name);
+              
+              try {
+                var deleteUrl = "https://api.github.com/repos/" + config.owner + "/" + config.repo + "/contents/01/" + file.name;
+                var deletePayload = {
+                  "message": "Remove old sheet file: " + file.name + " - " + new Date().toLocaleString('ja-JP'),
+                  "committer": {
+                    "name": config.name,
+                    "email": config.email
+                  },
+                  "sha": file.sha
+                };
+                
+                var deleteResponse = UrlFetchApp.fetch(deleteUrl, {
+                  "method": "DELETE",
+                  "headers": Object.assign(headers, {"Content-Type": "application/json"}),
+                  "payload": JSON.stringify(deletePayload),
+                  "muteHttpExceptions": true
+                });
+                
+                if (deleteResponse.getResponseCode() === 200) {
+                  Logger.log("✓ 古いファイル削除成功: " + file.name);
+                  deletedCount++;
+                } else {
+                  Logger.log("✗ 古いファイル削除失敗: " + file.name + " - " + deleteResponse.getResponseCode());
+                }
+                
+              } catch (deleteError) {
+                Logger.log("✗ 古いファイル削除エラー: " + file.name + " - " + deleteError.toString());
+              }
+            }
+          }
+        }
+        
+        Logger.log("クリーンアップ完了: " + deletedCount + "件の古いファイルを削除");
+        return deletedCount;
+      }
+      
+    } catch (error) {
+      Logger.log("クリーンアップエラー: " + error.toString());
+    }
+    
+    return 0;
+  }
   
   /**
    * スプレッドシートの内容をGitHubリポジトリにコミットする関数
@@ -88,68 +189,115 @@ function getCSVData() {
         throw new Error("GitHubトークンが設定されていません。スクリプトプロパティに 'GITHUB_TOKEN' を設定してください。");
       }
       
-      // ② CSVデータを取得
-      var encodedContent = getCSVData();
-      Logger.log("CSVデータを取得しました");
-  
-      // ③ GitHub API URL構築
-      var url = "https://api.github.com/repos/" + config.owner + "/" + config.repo + "/contents/" + encodeURIComponent(config.path);
+      // ② CSVデータを取得（シートごとに個別ファイル）
+      var csvFiles = getCSVData();
+      Logger.log("CSVファイル作成完了: " + csvFiles.length + "件");
       
-      // ④ ヘッダーの設定
-      var headers = {
-        "Authorization": "Bearer " + config.token,  // "token"から"Bearer"に変更
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "GAS-GitHub-Sync"
-      };
-  
-      // ⑤ 既存ファイルのSHAを取得
-      var sha = getExistingFileSHA(url, headers);
-      if (sha) {
-        Logger.log("既存のファイルSHAを取得: " + sha);
-      } else {
-        Logger.log("新規ファイルを作成します");
-      }
-  
-      // ⑥ コミット用のペイロード作成
-      var payload = {
-        "message": "Update spreadsheet data - " + new Date().toLocaleString('ja-JP'),
-        "committer": {
-          "name": config.name,
-          "email": config.email
-        },
-        "content": encodedContent
-      };
+      var results = [];
       
-      // 既存ファイル更新の場合、SHAを追加
-      if (sha) {
-        payload.sha = sha;
-      }
-  
-      // ⑦ PUTリクエストのオプション設定
-      var options = {
-        "method": "PUT",
-        "headers": Object.assign(headers, {"Content-Type": "application/json"}),
-        "payload": JSON.stringify(payload),
-        "muteHttpExceptions": true
-      };
-  
-      // ⑧ APIリクエスト送信
-      var putResponse = UrlFetchApp.fetch(url, options);
-      var responseCode = putResponse.getResponseCode();
-      var responseText = putResponse.getContentText();
+      // ③ 各シートのCSVファイルをGitHubにアップロード
+      for (var i = 0; i < csvFiles.length; i++) {
+        var csvFile = csvFiles[i];
+        var filePath = "01/" + csvFile.fileName; // 01フォルダ内に配置
+        
+        Logger.log("アップロード中: " + csvFile.sheetName + " → " + filePath);
+        
+        try {
+          // GitHub API URL構築
+          var url = "https://api.github.com/repos/" + config.owner + "/" + config.repo + "/contents/" + encodeURIComponent(filePath);
+          
+          // ヘッダーの設定
+          var headers = {
+            "Authorization": "Bearer " + config.token,
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "GAS-GitHub-Sync"
+          };
       
-      if (responseCode === 200 || responseCode === 201) {
-        var responseObj = JSON.parse(responseText);
-        Logger.log("✅ GitHub同期が成功しました！");
-        Logger.log("コミットURL: " + responseObj.commit.html_url);
-        return {
-          success: true,
-          commitUrl: responseObj.commit.html_url,
-          message: "同期完了"
-        };
-      } else {
-        throw new Error("GitHub API エラー: " + responseCode + " - " + responseText);
+          // 既存ファイルのSHAを取得
+          var sha = getExistingFileSHA(url, headers);
+          if (sha) {
+            Logger.log("既存のファイルSHAを取得: " + sha);
+          } else {
+            Logger.log("新規ファイルを作成します");
+          }
+      
+          // コミット用のペイロード作成
+          var payload = {
+            "message": "Update " + csvFile.sheetName + " sheet data - " + new Date().toLocaleString('ja-JP'),
+            "committer": {
+              "name": config.name,
+              "email": config.email
+            },
+            "content": csvFile.content
+          };
+          
+          // 既存ファイル更新の場合、SHAを追加
+          if (sha) {
+            payload.sha = sha;
+          }
+      
+          // PUTリクエストのオプション設定
+          var options = {
+            "method": "PUT",
+            "headers": Object.assign(headers, {"Content-Type": "application/json"}),
+            "payload": JSON.stringify(payload),
+            "muteHttpExceptions": true
+          };
+      
+          // APIリクエスト送信
+          var putResponse = UrlFetchApp.fetch(url, options);
+          var responseCode = putResponse.getResponseCode();
+          var responseText = putResponse.getContentText();
+          
+          if (responseCode === 200 || responseCode === 201) {
+            var responseObj = JSON.parse(responseText);
+            Logger.log("✅ " + csvFile.sheetName + " のアップロード成功");
+            
+            results.push({
+              sheetName: csvFile.sheetName,
+              fileName: csvFile.fileName,
+              success: true,
+              commitUrl: responseObj.commit.html_url,
+              rowCount: csvFile.rowCount
+            });
+          } else {
+            throw new Error("GitHub API エラー: " + responseCode + " - " + responseText);
+          }
+          
+        } catch (fileError) {
+          Logger.log("❌ " + csvFile.sheetName + " のアップロード失敗: " + fileError.toString());
+          
+          results.push({
+            sheetName: csvFile.sheetName,
+            fileName: csvFile.fileName,
+            success: false,
+            error: fileError.toString(),
+            rowCount: csvFile.rowCount
+          });
+        }
       }
+      
+      // ④ 古いファイルのクリーンアップ
+      var currentFileNames = csvFiles.map(function(f) { return f.fileName; });
+      var deletedCount = cleanupOldFiles(config, headers, currentFileNames);
+      
+      // 結果サマリー
+      var successCount = results.filter(function(r) { return r.success; }).length;
+      var totalCount = results.length;
+      
+      Logger.log("✅ GitHub同期完了: " + successCount + "/" + totalCount + " 件成功");
+      if (deletedCount > 0) {
+        Logger.log("🗑️ 古いファイル削除: " + deletedCount + "件");
+      }
+      
+      return {
+        success: successCount === totalCount,
+        totalFiles: totalCount,
+        successFiles: successCount,
+        deletedFiles: deletedCount,
+        results: results,
+        message: "同期完了: " + successCount + "/" + totalCount + " 件成功、古いファイル削除: " + deletedCount + "件"
+      };
       
     } catch (error) {
       Logger.log("❌ エラーが発生しました: " + error.toString());

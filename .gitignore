@@ -1,0 +1,71 @@
+# Google Apps Script
+*.gs
+*.js
+!GAS.js
+
+# 環境設定ファイル
+.env
+.env.local
+.env.production
+
+# ログファイル
+*.log
+logs/
+
+# 一時ファイル
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# OS生成ファイル
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE設定
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# 依存関係
+node_modules/
+package-lock.json
+yarn.lock
+
+# ビルド出力
+dist/
+build/
+out/
+
+# テストファイル
+test/
+tests/
+*.test.js
+*.spec.js
+
+# サンプルデータ（本番環境では除外）
+sample-data/
+test-data/
+
+# 機密情報
+secrets/
+credentials/
+*.key
+*.pem
+*.p12
+
+# バックアップファイル
+*.bak
+*.backup
+*.old
+
+# キャッシュ
+.cache/
+*.cache
+
+# その他
+*.zip
+*.tar.gz
+*.rar
