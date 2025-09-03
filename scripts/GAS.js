@@ -379,16 +379,328 @@ function setupAutoSync() {
   // 既存のトリガーを削除
   var triggers = ScriptApp.getProjectTriggers();
   triggers.forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === 'updateSpreadsheetToGitHub') {
+    if (trigger.getHandlerFunction() === 'updateSpreadsheetToGitHub' || 
+        trigger.getHandlerFunction() === 'pullFromGitHub' ||
+        trigger.getHandlerFunction() === 'syncWithGitHub') {
       ScriptApp.deleteTrigger(trigger);
     }
   });
   
   // 新しいトリガーを作成（例：1時間ごと）
-  ScriptApp.newTrigger('updateSpreadsheetToGitHub')
+  ScriptApp.newTrigger('syncWithGitHub')
     .timeBased()
     .everyHours(1)  // 1時間ごとに実行
     .create();
     
   Logger.log("✅ 自動同期トリガーを設定しました（1時間ごと）");
+}
+
+/**
+ * GitHubからファイルを取得し、スプレッドシートに反映する関数
+ */
+function pullFromGitHub() {
+  try {
+    Logger.log("GitHubからのpullを開始します...");
+    
+    // 処理開始の通知
+    SpreadsheetApp.getActiveSpreadsheet().toast("GitHubからデータを取得中...", "処理中", 30);
+    
+    // ① 設定情報を取得
+    var config = getConfig();
+    
+    // トークンの確認
+    if (!config.token) {
+      throw new Error("GitHubトークンが設定されていません。スクリプトプロパティに 'GITHUB_TOKEN' を設定してください。");
+    }
+    
+    // ② GitHubからファイル一覧を取得
+    var url = "https://api.github.com/repos/" + config.owner + "/" + config.repo + "/contents/" + encodeURIComponent(config.path);
+    var headers = {
+      "Authorization": "Bearer " + config.token,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "GAS-GitHub-Sync"
+    };
+    
+    var response = UrlFetchApp.fetch(url, {
+      "method": "GET",
+      "headers": headers,
+      "muteHttpExceptions": true
+    });
+    
+    if (response.getResponseCode() !== 200) {
+      throw new Error("GitHubからファイル一覧の取得に失敗: " + response.getResponseCode() + " - " + response.getContentText());
+    }
+    
+    var contents = JSON.parse(response.getContentText());
+    var csvFiles = contents.filter(function(file) {
+      return file.name.endsWith('.csv');
+    });
+    
+    Logger.log("GitHubで見つかったCSVファイル数: " + csvFiles.length);
+    
+    if (csvFiles.length === 0) {
+      SpreadsheetApp.getActiveSpreadsheet().toast("GitHubにCSVファイルが見つかりませんでした", "完了", 10);
+      return {
+        success: true,
+        totalFiles: 0,
+        updatedFiles: 0,
+        message: "GitHubにCSVファイルが見つかりませんでした"
+      };
+    }
+    
+    var results = [];
+    var updatedCount = 0;
+    
+    // ③ 各CSVファイルを処理
+    for (var i = 0; i < csvFiles.length; i++) {
+      var file = csvFiles[i];
+      
+      // 各ファイルの処理状況を通知
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        file.name + " を処理中... (" + (i + 1) + "/" + csvFiles.length + ")", 
+        "処理中", 
+        10
+      );
+      
+      Logger.log("処理中: " + file.name);
+      
+      try {
+        // ファイルの内容を取得
+        var fileResponse = UrlFetchApp.fetch(file.download_url, {
+          "method": "GET",
+          "muteHttpExceptions": true
+        });
+        
+        if (fileResponse.getResponseCode() !== 200) {
+          throw new Error("ファイル内容の取得に失敗: " + fileResponse.getResponseCode());
+        }
+        
+        var csvContent = fileResponse.getContentText();
+        
+        // CSVをパースしてデータを取得
+        var rows = parseCSV(csvContent);
+        
+        // ファイル名からシート情報を抽出（Push時と同じロジック）
+        var sheetInfo = extractSheetInfoFromFileName(file.name);
+        
+        if (sheetInfo) {
+          // シートが存在するかチェック
+          var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+          var sheet = spreadsheet.getSheetByName(sheetInfo.sheetName);
+          
+          if (!sheet) {
+            // シートが存在しない場合は新規作成
+            sheet = spreadsheet.insertSheet(sheetInfo.sheetName);
+            Logger.log("新規シートを作成: " + sheetInfo.sheetName);
+          }
+          
+          // シートの内容をクリア
+          sheet.clear();
+          
+          // データを書き込み
+          if (rows.length > 0) {
+            sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+            Logger.log("✓ " + sheetInfo.sheetName + " の更新完了: " + rows.length + "行");
+            updatedCount++;
+          }
+          
+          results.push({
+            fileName: file.name,
+            sheetName: sheetInfo.sheetName,
+            success: true,
+            rowCount: rows.length,
+            action: sheet.getSheetId() === sheetInfo.sheetId ? "更新" : "新規作成"
+          });
+          
+        } else {
+          Logger.log("⚠️ ファイル名からシート情報を抽出できませんでした: " + file.name);
+          results.push({
+            fileName: file.name,
+            success: false,
+            error: "ファイル名からシート情報を抽出できませんでした"
+          });
+        }
+        
+      } catch (fileError) {
+        Logger.log("❌ " + file.name + " の処理失敗: " + fileError.toString());
+        
+        results.push({
+          fileName: file.name,
+          success: false,
+          error: fileError.toString()
+        });
+      }
+    }
+    
+    // 結果サマリー
+    var successCount = results.filter(function(r) { return r.success; }).length;
+    var totalCount = results.length;
+    
+    Logger.log("✅ GitHub pull完了: " + successCount + "/" + totalCount + " 件成功、更新: " + updatedCount + "件");
+    
+    // 処理完了の通知
+    var resultMessage = successCount === totalCount ? 
+      "✅ GitHubからのpullが完了しました！" + successCount + "/" + totalCount + " 件成功、更新: " + updatedCount + "件" :
+      "⚠️ GitHubからのpullが完了しました。" + successCount + "/" + totalCount + " 件成功、更新: " + updatedCount + "件";
+    
+    SpreadsheetApp.getActiveSpreadsheet().toast(resultMessage, "完了", 30);
+    
+    return {
+      success: successCount === totalCount,
+      totalFiles: totalCount,
+      successFiles: successCount,
+      updatedFiles: updatedCount,
+      results: results,
+      message: "Pull完了: " + successCount + "/" + totalCount + " 件成功、更新: " + updatedCount + "件"
+    };
+    
+  } catch (error) {
+    Logger.log("❌ エラーが発生しました: " + error.toString());
+    SpreadsheetApp.getActiveSpreadsheet().toast("❌ エラーが発生しました: " + error.toString(), "エラー", 30);
+    throw error;
+  }
+}
+
+/**
+ * CSVファイル名からシート情報を抽出する関数（Push時と同じロジック）
+ */
+function extractSheetInfoFromFileName(fileName) {
+  try {
+    // ファイル名の形式: {sheetId}_{sheetName}.csv
+    var match = fileName.match(/^(\d+)_(.+)\.csv$/);
+    
+    if (match) {
+      var sheetId = parseInt(match[1]);
+      var sheetName = match[2];
+      
+      return {
+        sheetId: sheetId,
+        sheetName: sheetName
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    Logger.log("ファイル名解析エラー: " + error.toString());
+    return null;
+  }
+}
+
+/**
+ * CSV文字列をパースして2次元配列に変換する関数
+ */
+function parseCSV(csvContent) {
+  try {
+    var lines = csvContent.split('\n');
+    var result = [];
+    
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (line === '') continue;
+      
+      var row = [];
+      var current = '';
+      var inQuotes = false;
+      
+      for (var j = 0; j < line.length; j++) {
+        var char = line[j];
+        
+        if (char === '"') {
+          if (inQuotes && line[j + 1] === '"') {
+            // エスケープされたダブルクォート
+            current += '"';
+            j++; // 次の文字をスキップ
+          } else {
+            // クォートの開始/終了
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          // カンマ（クォート外）
+          row.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      
+      // 最後のフィールドを追加
+      row.push(current);
+      result.push(row);
+    }
+    
+    return result;
+  } catch (error) {
+    Logger.log("CSVパースエラー: " + error.toString());
+    return [];
+  }
+}
+
+/**
+ * 手動でpullのみを実行する関数
+ */
+function manualPull() {
+  return pullFromGitHub();
+}
+
+/**
+ * 手動でpushのみを実行する関数
+ */
+function manualPush() {
+  return updateSpreadsheetToGitHub();
+}
+
+/**
+ * GitHubとの双方向同期を実行する関数
+ */
+function syncWithGitHub() {
+  try {
+    Logger.log("GitHubとの双方向同期を開始します...");
+    
+    // 処理開始の通知
+    SpreadsheetApp.getActiveSpreadsheet().toast("GitHubとの双方向同期を開始しています...", "処理中", 30);
+    
+    // ① まずGitHubからpull
+    Logger.log("=== Pull処理開始 ===");
+    var pullResult = pullFromGitHub();
+    
+    // ② 次にスプレッドシートの内容をGitHubにpush
+    Logger.log("=== Push処理開始 ===");
+    var pushResult = updateSpreadsheetToGitHub();
+    
+    // 結果を統合
+    var totalFiles = (pullResult.totalFiles || 0) + (pushResult.totalFiles || 0);
+    var successFiles = (pullResult.successFiles || 0) + (pushResult.successFiles || 0);
+    var updatedFiles = (pullResult.updatedFiles || 0) + (pushResult.deletedFiles || 0);
+    
+    Logger.log("✅ 双方向同期完了: " + successFiles + "/" + totalFiles + " 件成功");
+    
+    // 処理完了の通知
+    var resultMessage = successFiles === totalFiles ? 
+      "✅ 双方向同期が完了しました！" + successFiles + "/" + totalFiles + " 件成功" :
+      "⚠️ 双方向同期が完了しました。" + successFiles + "/" + totalFiles + " 件成功";
+    
+    SpreadsheetApp.getActiveSpreadsheet().toast(resultMessage, "完了", 30);
+    
+    return {
+      success: successFiles === totalFiles,
+      totalFiles: totalFiles,
+      successFiles: successFiles,
+      updatedFiles: updatedFiles,
+      pullResult: pullResult,
+      pushResult: pushResult,
+      message: "双方向同期完了: " + successFiles + "/" + totalFiles + " 件成功"
+    };
+    
+  } catch (error) {
+    Logger.log("❌ 双方向同期エラー: " + error.toString());
+    SpreadsheetApp.getActiveSpreadsheet().toast("❌ 双方向同期エラー: " + error.toString(), "エラー", 30);
+    throw error;
+  }
+}
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('GitHub連携')
+    .addItem('GitHubにpushする', 'updateSpreadsheetToGitHub')
+    .addToUi();
 }
