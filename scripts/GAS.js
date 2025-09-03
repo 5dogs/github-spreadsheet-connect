@@ -177,7 +177,7 @@ function cleanupOldFiles(config, headers, currentFileNames) {
 /**
  * スプレッドシートの内容をGitHubリポジトリにコミットする関数
  */
-function updateSpreadsheetToGitHub() {
+function pushToGitHub() {
   try {
     Logger.log("GitHub同期を開始します...");
     
@@ -379,15 +379,14 @@ function setupAutoSync() {
   // 既存のトリガーを削除
   var triggers = ScriptApp.getProjectTriggers();
   triggers.forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === 'updateSpreadsheetToGitHub' || 
-        trigger.getHandlerFunction() === 'pullFromGitHub' ||
-        trigger.getHandlerFunction() === 'syncWithGitHub') {
+    if (trigger.getHandlerFunction() === 'pushToGitHub' || 
+        trigger.getHandlerFunction() === 'pullFromGitHub') {
       ScriptApp.deleteTrigger(trigger);
     }
   });
   
   // 新しいトリガーを作成（例：1時間ごと）
-  ScriptApp.newTrigger('syncWithGitHub')
+  ScriptApp.newTrigger('pushToGitHub')
     .timeBased()
     .everyHours(1)  // 1時間ごとに実行
     .create();
@@ -635,72 +634,14 @@ function parseCSV(csvContent) {
   }
 }
 
-/**
- * 手動でpullのみを実行する関数
- */
-function manualPull() {
-  return pullFromGitHub();
-}
 
-/**
- * 手動でpushのみを実行する関数
- */
-function manualPush() {
-  return updateSpreadsheetToGitHub();
-}
 
-/**
- * GitHubとの双方向同期を実行する関数
- */
-function syncWithGitHub() {
-  try {
-    Logger.log("GitHubとの双方向同期を開始します...");
-    
-    // 処理開始の通知
-    SpreadsheetApp.getActiveSpreadsheet().toast("GitHubとの双方向同期を開始しています...", "処理中", 30);
-    
-    // ① まずGitHubからpull
-    Logger.log("=== Pull処理開始 ===");
-    var pullResult = pullFromGitHub();
-    
-    // ② 次にスプレッドシートの内容をGitHubにpush
-    Logger.log("=== Push処理開始 ===");
-    var pushResult = updateSpreadsheetToGitHub();
-    
-    // 結果を統合
-    var totalFiles = (pullResult.totalFiles || 0) + (pushResult.totalFiles || 0);
-    var successFiles = (pullResult.successFiles || 0) + (pushResult.successFiles || 0);
-    var updatedFiles = (pullResult.updatedFiles || 0) + (pushResult.deletedFiles || 0);
-    
-    Logger.log("✅ 双方向同期完了: " + successFiles + "/" + totalFiles + " 件成功");
-    
-    // 処理完了の通知
-    var resultMessage = successFiles === totalFiles ? 
-      "✅ 双方向同期が完了しました！" + successFiles + "/" + totalFiles + " 件成功" :
-      "⚠️ 双方向同期が完了しました。" + successFiles + "/" + totalFiles + " 件成功";
-    
-    SpreadsheetApp.getActiveSpreadsheet().toast(resultMessage, "完了", 30);
-    
-    return {
-      success: successFiles === totalFiles,
-      totalFiles: totalFiles,
-      successFiles: successFiles,
-      updatedFiles: updatedFiles,
-      pullResult: pullResult,
-      pushResult: pushResult,
-      message: "双方向同期完了: " + successFiles + "/" + totalFiles + " 件成功"
-    };
-    
-  } catch (error) {
-    Logger.log("❌ 双方向同期エラー: " + error.toString());
-    SpreadsheetApp.getActiveSpreadsheet().toast("❌ 双方向同期エラー: " + error.toString(), "エラー", 30);
-    throw error;
-  }
-}
+
 
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('GitHub連携')
-    .addItem('GitHubにpushする', 'updateSpreadsheetToGitHub')
+    .addItem('GitHubにpushする', 'pushToGitHub')
+    .addItem('GitHubからpullする', 'pullFromGitHub')
     .addToUi();
 }
