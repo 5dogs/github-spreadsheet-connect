@@ -397,6 +397,7 @@ function setupAutoSync() {
 /**
  * GitHubからファイルを取得し、スプレッドシートに反映する関数
  */
+/*
 function pullFromGitHub() {
   try {
     Logger.log("GitHubからのpullを開始します...");
@@ -465,6 +466,7 @@ function pullFromGitHub() {
       
       try {
         // ファイルの内容を取得
+
         var fileResponse = UrlFetchApp.fetch(file.download_url, {
           "method": "GET",
           "muteHttpExceptions": true
@@ -475,6 +477,7 @@ function pullFromGitHub() {
         }
         
         var csvContent = fileResponse.getContentText();
+
         
         // CSVをパースしてデータを取得
         var rows = parseCSV(csvContent);
@@ -483,6 +486,7 @@ function pullFromGitHub() {
         var sheetInfo = extractSheetInfoFromFileName(file.name);
         
         if (sheetInfo) {
+          
           // シートが存在するかチェック
           var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
           var sheet = spreadsheet.getSheetByName(sheetInfo.sheetName);
@@ -493,12 +497,12 @@ function pullFromGitHub() {
             Logger.log("新規シートを作成: " + sheetInfo.sheetName);
           }
           
-          // シートの内容のみをクリア（書式は保持）
-          sheet.clearContents();
-          
-          // データを書き込み
-          if (rows.length > 0) {
+          // データの列数に合わせて範囲をクリア・設定
+          if (rows.length > 0 && rows[0].length > 0) {
+            // シート全体をクリアしてから新しいデータを上書き
+            sheet.clearContents();
             sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+            
             Logger.log("✓ " + sheetInfo.sheetName + " の更新完了: " + rows.length + "行");
             updatedCount++;
           }
@@ -559,10 +563,12 @@ function pullFromGitHub() {
     throw error;
   }
 }
+*/
 
 /**
  * CSVファイル名からシート情報を抽出する関数（Push時と同じロジック）
  */
+/*
 function extractSheetInfoFromFileName(fileName) {
   try {
     // ファイル名の形式: {sheetId}_{sheetName}.csv
@@ -584,10 +590,12 @@ function extractSheetInfoFromFileName(fileName) {
     return null;
   }
 }
+*/
 
 /**
  * CSV文字列をパースして2次元配列に変換する関数
  */
+/*
 function parseCSV(csvContent) {
   try {
     var lines = csvContent.split('\n');
@@ -624,8 +632,16 @@ function parseCSV(csvContent) {
       
       // 最後のフィールドを追加
       row.push(current);
+      
+      // 行末のカンマがある場合、半角空白カラムを追加
+      if (line.endsWith(',')) {
+        row.push(' ');
+      }
+      
       result.push(row);
     }
+    
+    Logger.log("CSV解析完了: " + result.length + "行");
     
     return result;
   } catch (error) {
@@ -633,6 +649,7 @@ function parseCSV(csvContent) {
     return [];
   }
 }
+*/
 
 
 
@@ -642,6 +659,6 @@ function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('GitHub連携')
     .addItem('GitHubにpushする', 'pushToGitHub')
-    .addItem('GitHubからpullする', 'pullFromGitHub')
+    // .addItem('GitHubからpullする', 'pullFromGitHub')
     .addToUi();
 }
